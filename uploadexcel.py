@@ -61,11 +61,8 @@ wb = Workbook()
 ws = wb.active
 ws.title = "Farm Activities"
 
-# Colors
-plant_fill = PatternFill(start_color="4CAF50", end_color="4CAF50", fill_type="solid")   # green
-uproot_fill = PatternFill(start_color="9C27B0", end_color="9C27B0", fill_type="solid") # purple
-harvest_fill = PatternFill(start_color="FFC107", end_color="FFC107", fill_type="solid") # yellow
-empty_fill = PatternFill(start_color="E0E0E0", end_color="E0E0E0", fill_type="solid")  # light gray
+# Default empty fill (for weeks with no activity)
+empty_fill = PatternFill(start_color="E0E0E0", end_color="E0E0E0", fill_type="solid")
 
 # --- Build headers ---
 col = 1
@@ -115,21 +112,26 @@ for block, block_data in blocks.items():
                 act = block_data["data"][year][week]["action_type"]
                 crop = block_data["data"][year][week]["crop"]
                 yield_val = block_data["data"][year][week]["total_yeild"]
+                color_code = block_data["data"][year][week]["color_code"]
+
+                # Use DB color if available
+                if color_code:
+                    hex_color = color_code.replace("#", "")
+                    fill = PatternFill(start_color=hex_color, end_color=hex_color, fill_type="solid")
+                else:
+                    fill = empty_fill
 
                 if act == "PLANTING":
                     val = f"P-{crop[0]}"
-                    fill = plant_fill
                 elif act == "UPROOTING":
                     val = f"U-{crop[0]}"
-                    fill = uproot_fill
                 elif act == "HARVESTING":
                     val = yield_val
-                    fill = harvest_fill
 
             cell = ws.cell(row, col, val)
             cell.fill = fill
             cell.alignment = Alignment(horizontal="center", vertical="center")
-            if val and act != "HARVESTING":
+            if val and (act != "HARVESTING"):
                 cell.font = Font(color="FFFFFF", bold=True)
 
             col += 1
@@ -147,25 +149,43 @@ for year in sorted(years_set):
         ws.cell(row, col, formula)
         col += 1
 
-# --- Legend / Key for users ---
+# --- Legend / Key from DB (Crop + Color only, unique) ---
 legend_start_row = row + 2
+ws.merge_cells(start_row=legend_start_row, start_column=1, end_row=legend_start_row, end_column=2)
 ws.cell(legend_start_row, 1, "LEGEND").font = Font(bold=True)
 
-legend_items = [
-    ("Planting", "P-{Crop Initial}", plant_fill),
-    ("Uprooting", "U-{Crop Initial}", uproot_fill),
-    ("Harvesting", "Yield Value", harvest_fill),
-    ("Empty Week", "No Activity", empty_fill),
-]
+# Fetch crops + colors
+cursor.execute("""
+    SELECT crop, color_code 
+    FROM event_lines 
+    LEFT JOIN events USING(event_id)
+    LEFT JOIN crops USING(crop_id)
+    WHERE event_lines.is_active = 1
+    AND crop IS NOT NULL
+""")
+legend_items = cursor.fetchall()
 
-for i, (label, desc, fill) in enumerate(legend_items, start=0):
+# Remove duplicates (crop + color)
+unique_legend = {}
+for item in legend_items:
+    crop = item["crop"] if item["crop"] else "N/A"
+    color_code = item["color_code"]
+    unique_legend[crop] = color_code   # keep one per crop
+
+# Write legend
+for i, (crop, color_code) in enumerate(unique_legend.items(), start=0):
     r = legend_start_row + i + 1
-    ws.cell(r, 1, label)
-    cell = ws.cell(r, 2, desc)
+    ws.cell(r, 1, crop)
+
+    if color_code:
+        hex_color = color_code.replace("#", "")
+        fill = PatternFill(start_color=hex_color, end_color=hex_color, fill_type="solid")
+    else:
+        fill = empty_fill
+
+    cell = ws.cell(r, 2, "")
     cell.fill = fill
     cell.alignment = Alignment(horizontal="center", vertical="center")
-    if fill != empty_fill and label != "Harvesting":
-        cell.font = Font(color="FFFFFF", bold=True)
 
 # --- Auto-fit column widths ---
 for col_idx, col_cells in enumerate(ws.columns, 1):
